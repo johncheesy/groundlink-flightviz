@@ -33,13 +33,24 @@ function normalizeFlight(raw, idx) {
     : []
 
   const s = f.summary && typeof f.summary === 'object' ? f.summary : {}
+  const bbox = s.bbox && typeof s.bbox === 'object' ? {
+    sw: Array.isArray(s.bbox.sw) ? s.bbox.sw : null,
+    ne: Array.isArray(s.bbox.ne) ? s.bbox.ne : null,
+    sw_mgrs: s.bbox.sw_mgrs ?? null,
+    ne_mgrs: s.bbox.ne_mgrs ?? null,
+  } : null
   const summary = {
     max_alt: num(s.max_alt),
+    min_alt: num(s.min_alt),
+    avg_alt: num(s.avg_alt),
+    field_elevation: num(s.field_elevation),
     max_speed: num(s.max_speed),
     total_dist_m: num(s.total_dist_m, 0),
+    bbox,
     modes_flown: Array.isArray(s.modes_flown) ? s.modes_flown : [],
     fix_quality: s.fix_quality || 'UNKNOWN',
     start_utc: s.start_utc ?? null,
+    end_utc: s.end_utc ?? null,
     track_points: num(s.track_points, track.length),
     has_gps: s.has_gps === true,
     rssi_min: num(s.rssi_min),
@@ -56,6 +67,25 @@ function normalizeFlight(raw, idx) {
         .map((p) => ({ t: num(p.t, 0), rssi: num(p.rssi), lq: num(p.lq) }))
     : []
 
+  // Battery time series [{t, volt, curr, mah_used, temp?}] — dedicated panel.
+  const battery = Array.isArray(f.battery)
+    ? f.battery.filter((p) => p && typeof p === 'object').map((p) => ({
+        t: num(p.t, 0),
+        volt: num(p.volt),
+        curr: num(p.curr),
+        mah_used: num(p.mah_used),
+        temp: num(p.temp),
+      }))
+    : []
+  const bs = f.battery_summary && typeof f.battery_summary === 'object' ? f.battery_summary : {}
+  const battery_summary = {
+    start_volt: num(bs.start_volt),
+    end_volt: num(bs.end_volt),
+    total_mah_used: num(bs.total_mah_used),
+    max_curr: num(bs.max_curr),
+    max_temp: num(bs.max_temp),
+  }
+
   return {
     id: f.id ?? idx + 1,
     filename: f.filename || `flight_${idx + 1}`,
@@ -64,6 +94,8 @@ function normalizeFlight(raw, idx) {
     telemetry,
     modes,
     summary,
+    battery,
+    battery_summary,
     rcin,
     rssi,
     rc_protocol: typeof f.rc_protocol === 'string' ? f.rc_protocol : null,

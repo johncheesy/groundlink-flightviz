@@ -137,7 +137,7 @@ def extract_flight(path, flight_id):
     mlog = mavutil.mavlink_connection(path)
 
     raw = {t: [] for t in ("GPS", "POS", "AHR2", "ATT", "MODE",
-                            "BAT", "VIBE", "RCIN", "RSSI", "MSG")}
+                            "BAT", "VIBE", "RCIN", "RSSI", "MSG", "ORGN")}
     t0 = None  # first TimeUS (boot-relative origin)
 
     while True:
@@ -242,12 +242,34 @@ def extract_flight(path, flight_id):
                 out.append(pt)
         return decimate(out)
 
+    # ----- battery: full telemetry (Volt / Curr / CurrTot=mAh used / Temp) ---
+    # One pass over BAT builds both the dedicated top-level `battery` series and
+    # the legacy telemetry.battery (kept for back-compat). CurrTot is cumulative
+    # mAh consumed; Temp is present on smart batteries (BATT_MONITOR with temp).
+    battery = series(raw["BAT"], {
+        "volt": ["Volt"], "curr": ["Curr"],
+        "mah_used": ["CurrTot"], "temp": ["Temp"],
+    })
+
     telemetry = {
         "attitude": series(raw["ATT"], {"roll": ["Roll"], "pitch": ["Pitch"], "yaw": ["Yaw"]}),
         "altitude": decimate([{"t": p["t"], "alt": p["alt"]} for p in track if p["alt"] is not None]),
         "speed":    decimate([{"t": p["t"], "spd": p["spd"]} for p in track if p["spd"] is not None]),
         "battery":  series(raw["BAT"], {"volt": ["Volt"], "curr": ["Curr"], "currtot": ["CurrTot"]}),
         "vibe":     series(raw["VIBE"], {"x": ["VibeX"], "y": ["VibeY"], "z": ["VibeZ"]}),
+    }
+
+    # ----- battery summary --------------------------------------------------
+    bat_volts = [b["volt"] for b in battery if b.get("volt") is not None]
+    bat_currs = [b["curr"] for b in battery if b.get("curr") is not None]
+    bat_mah = [b["mah_used"] for b in battery if b.get("mah_used") is not None]
+    bat_temps = [b["temp"] for b in battery if b.get("temp") is not None]
+    battery_summary = {
+        "start_volt": round(bat_volts[0], 3) if bat_volts else None,
+        "end_volt": round(bat_volts[-1], 3) if bat_volts else None,
+        "total_mah_used": round(max(bat_mah), 1) if bat_mah else None,
+        "max_curr": round(max(bat_currs), 2) if bat_currs else None,
+        "max_temp": round(max(bat_temps), 1) if bat_temps else None,
     }
     # ----- RF link: RSSI + RCIN channels + protocol/frequency ---------------
     # RSSI -> [{t, rssi, lq}]. ArduPilot's RXRSSI is a 0..1 receiver-strength
@@ -285,19 +307,49 @@ def extract_flight(path, flight_id):
     all_t = [r["_t"] for rows in raw.values() for r in rows]
     duration_s = round(max(all_t) - min(all_t), 2) if all_t else 0.0
 
-    max_alt = max((p["alt"] for p in track if p["alt"] is not None), default=None)
+    alts = [p["alt"] for p in track if p["alt"] is not None]
+    max_alt = max(alts, default=None)
+    min_alt = min(alts, default=None)
+    avg_alt = sum(alts) / len(alts) if alts else None
     max_speed = max((p["spd"] for p in track if p["spd"] is not None), default=None)
     start_utc = next((p["utc"] for p in track if p["utc"]), None)
+    end_utc = next((p["utc"] for p in reversed(track) if p["utc"]), None)
+
+    # ----- field elevation (for AGL): ORGN.Alt > lowest track point ---------
+    field_elevation = None
+    if raw["ORGN"]:
+        field_elevation = gv(raw["ORGN"][0], "Alt")
+    if field_elevation is None and min_alt is not None:
+        field_elevation = min_alt
+
+    # ----- bounding box (+ MGRS corners) ------------------------------------
+    bbox = None
+    if track:
+        lats = [p["lat"] for p in track]
+        lons = [p["lon"] for p in track]
+        sw_lat, sw_lon = min(lats), min(lons)
+        ne_lat, ne_lon = max(lats), max(lons)
+        bbox = {
+            "sw": [round(sw_lat, 6), round(sw_lon, 6)],
+            "ne": [round(ne_lat, 6), round(ne_lon, 6)],
+            "sw_mgrs": to_mgrs(sw_lat, sw_lon),
+            "ne_mgrs": to_mgrs(ne_lat, ne_lon),
+        }
 
     rssi_vals = [p["rssi"] for p in rssi if p.get("rssi") is not None]
 
     summary = {
         "max_alt": round(max_alt, 2) if max_alt is not None else None,
+        "min_alt": round(min_alt, 2) if min_alt is not None else None,
+        "avg_alt": round(avg_alt, 2) if avg_alt is not None else None,
+        "field_elevation": round(field_elevation, 2) if field_elevation is not None else None,
         "max_speed": round(max_speed, 2) if max_speed is not None else None,
         "total_dist_m": round(total_dist, 1),
+        "bbox": bbox,
         "modes_flown": modes_flown,
         "fix_quality": fix_quality,
         "start_utc": start_utc,
+        "end_utc": end_utc,
         "track_points": len(track),
         "has_gps": have_gps,
         "rssi_min": round(min(rssi_vals), 3) if rssi_vals else None,
@@ -311,6 +363,8 @@ def extract_flight(path, flight_id):
         "duration_s": duration_s,
         "track": track,
         "telemetry": telemetry,
+        "battery": battery,
+        "battery_summary": battery_summary,
         "modes": modes,
         "summary": summary,
         "rcin": rcin,

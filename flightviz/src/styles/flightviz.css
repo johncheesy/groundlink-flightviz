@@ -440,6 +440,69 @@ body {
 }
 .fv-drop__sub { margin-top: 10px; font-size: 12px; color: var(--dim); line-height: 1.7; }
 
+/* ---- Battery tab (dedicated drawer panel) ------------------------------- */
+
+.fv-batt-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+.fv-batt-cell {
+  background: var(--surface2);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-sm);
+  padding: 6px 8px;
+}
+.fv-batt-cell__k { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
+.fv-batt-cell__v { font-size: 16px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.fv-batt-cell__v.is-accent { color: var(--accent); }
+.fv-batt-cell__u { font-size: 10px; color: var(--dim); margin-left: 2px; font-weight: 500; }
+
+/* ---- Position readout + start/end/high/low table (left panel) ----------- */
+
+.fv-posdetail { margin-bottom: var(--sp-3); }
+.fv-posdetail__label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); margin-bottom: 3px; }
+.fv-posdetail__mgrs {
+  font-family: var(--ui); font-weight: 600; font-size: 13px; color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: .02em; margin-bottom: 6px;
+}
+.fv-posdetail__grid {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px var(--sp-3);
+  font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.fv-posdetail__grid .k { color: var(--faint); }
+.fv-posdetail__grid .v { color: var(--ink); text-align: right; }
+
+.fv-postbl {
+  width: 100%; border-collapse: collapse; font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.fv-postbl th {
+  text-align: right; color: var(--faint); font-weight: 500; font-size: 10px;
+  text-transform: uppercase; letter-spacing: .03em; padding: 2px 4px;
+  border-bottom: 1px solid var(--hair);
+}
+.fv-postbl td { text-align: right; padding: 3px 4px; color: var(--ink); border-bottom: 1px solid var(--hair); }
+.fv-postbl__tag { text-align: left !important; color: var(--dim); font-weight: 600; }
+.fv-postbl__mgrs { text-align: left !important; font-size: 10px; color: var(--dim); }
+
+/* ---- Track stats (left panel) ------------------------------------------- */
+
+.fv-stats { display: flex; flex-direction: column; gap: 2px; }
+.fv-stat {
+  display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-3);
+  padding: 3px 0; border-bottom: 1px solid var(--hair); font-size: 12px;
+}
+.fv-stat__k { color: var(--faint); }
+.fv-stat__v { color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; }
+.fv-stats__note { margin-top: var(--sp-2); }
+
+/* ---- 3D rail button on-state + view-flyout hint ------------------------- */
+
+.map-rail__btn.is-on { color: var(--accent); }
+.map-flyout__hint { margin: var(--sp-2) 0 0; font-size: 11px; color: var(--dim); line-height: 1.5; }
+
 /* ---- Scrollbars --------------------------------------------------------- */
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }

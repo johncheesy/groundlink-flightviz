@@ -9,9 +9,23 @@ const RING = '#ffffff' // var(--mapring)
 const START_COLOR = '#34e6c2' // teal-green start
 const END_COLOR = '#ff5b5b' // red end
 const CURSOR_FILL = '#ffffff'
+const MAP_BG = '#0b1018' // --mapbg, dark in both themes
 
-// Esri World Imagery is the default dark basemap; OpenTopoMap + OpenFreeMap
-// Bright are the alternates (mirrors GroundLink's basemap flyout).
+// AWS Terrarium DEM — free, token-free; encoding 'terrarium' (mirrors GroundLink).
+const DEM_SOURCE = 'fv-dem'
+const DEM_SPEC = {
+  type: 'raster-dem',
+  tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+  encoding: 'terrarium',
+  tileSize: 256,
+  maxzoom: 15,
+  attribution: 'Elevation: Terrain Tiles (AWS)',
+}
+const TERRAIN_EXAGGERATION = 1.5
+
+// The exact basemap set GroundLink ships (src/map/basemaps.js): Esri World
+// Imagery (default dark satellite), PDOK NL ortho, EOX Sentinel-2, OpenTopoMap,
+// OpenFreeMap Bright. PDOK/EOX use RESTful WMTS XYZ endpoints (token-free).
 const BASEMAPS = [
   {
     id: 'imagery', label: 'Esri World Imagery', kind: 'raster',
@@ -20,8 +34,20 @@ const BASEMAPS = [
     attribution: 'Imagery © Esri, Maxar, Earthstar Geographics',
   },
   {
+    id: 'pdok', label: 'NL Luchtfoto (PDOK)', kind: 'raster',
+    tiles: ['https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_ortho25/EPSG:3857/{z}/{x}/{y}.jpeg'],
+    maxzoom: 20,
+    attribution: 'Imagery © PDOK / Beeldmateriaal Nederland (CC BY 4.0)',
+  },
+  {
+    id: 'eox', label: 'Sentinel-2 cloudless', kind: 'raster',
+    tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg'],
+    maxzoom: 15,
+    attribution: 'Imagery © EOX / ESA Sentinel-2 cloudless 2020 (CC BY-NC-SA)',
+  },
+  {
     id: 'topo', label: 'OpenTopoMap', kind: 'raster',
-    tiles: ['https://tile.opentopomap.org/{z}/{x}/{y}.png'],
+    tiles: ['https://a.tile.opentopomap.org/{z}/{x}/{y}.png', 'https://b.tile.opentopomap.org/{z}/{x}/{y}.png'],
     maxzoom: 17,
     attribution: '© OpenTopoMap (CC-BY-SA) · © OpenStreetMap contributors',
   },
@@ -37,7 +63,10 @@ function rasterStyle(bm) {
     sources: {
       base: { type: 'raster', tiles: bm.tiles, tileSize: 256, maxzoom: bm.maxzoom, attribution: bm.attribution },
     },
-    layers: [{ id: 'base', type: 'raster', source: 'base' }],
+    layers: [
+      { id: 'bg', type: 'background', paint: { 'background-color': MAP_BG } },
+      { id: 'base', type: 'raster', source: 'base' },
+    ],
   }
 }
 
@@ -101,29 +130,88 @@ function endFeatures(track) {
   }
 }
 
+// Build the floating 3D track: one short ribbon slab per segment, extruded at
+// the segment's altitude AGL (alt − field elevation). fill-extrusion base/height
+// are metres above terrain, so AGL places the ribbon ≈ at the true flight
+// altitude above the terrain surface. THICK gives the ribbon visible body.
+const RIBBON_HALF_W = 2.5 // metres each side
+const RIBBON_THICK = 6 // metres vertical body
+function track3DFeatures(track, fieldElev) {
+  const features = []
+  const fe = fieldElev != null ? fieldElev : 0
+  for (let i = 1; i < track.length; i++) {
+    const a = track[i - 1], b = track[i]
+    if (a.alt == null || b.alt == null) continue
+    const lat = (a.lat + b.lat) / 2
+    const mPerLat = 111320
+    const mPerLon = 111320 * Math.cos((lat * Math.PI) / 180) || 1e-6
+    const vx = (b.lon - a.lon) * mPerLon
+    const vy = (b.lat - a.lat) * mPerLat
+    const L = Math.hypot(vx, vy)
+    // perpendicular unit vector (metres) → degrees offset
+    const px = L ? -vy / L : 0
+    const py = L ? vx / L : 1
+    const offLon = (px * RIBBON_HALF_W) / mPerLon
+    const offLat = (py * RIBBON_HALF_W) / mPerLat
+    const base = Math.max(0, (a.alt + b.alt) / 2 - fe)
+    features.push({
+      type: 'Feature',
+      properties: { base, top: base + RIBBON_THICK },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [a.lon + offLon, a.lat + offLat],
+          [b.lon + offLon, b.lat + offLat],
+          [b.lon - offLon, b.lat - offLat],
+          [a.lon - offLon, a.lat - offLat],
+          [a.lon + offLon, a.lat + offLat],
+        ]],
+      },
+    })
+  }
+  return { type: 'FeatureCollection', features }
+}
+
 export default function MapPanel({ flight, hoverT, setHoverT }) {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const popupRef = useRef(null)
   const trackRef = useRef(flight.track)
+  const fieldElevRef = useRef(flight.summary.field_elevation)
   const readyRef = useRef(false)
-  const appliedBasemap = useRef('imagery') // basemap the current style already shows
+  const threeDRef = useRef(false) // read inside style.load handler
+  const pitchRef = useRef(0)
+  const bearingRef = useRef(0)
+  const appliedBasemap = useRef('imagery')
   const [basemap, setBasemap] = useState('imagery')
-  const [flyout, setFlyout] = useState(false)
+  const [flyout, setFlyout] = useState(null) // 'basemap' | 'view' | null
+  const [threeD, setThreeD] = useState(false)
+  const [pitch, setPitch] = useState(0)
+  const [bearing, setBearing] = useState(0)
 
   trackRef.current = flight.track
+  fieldElevRef.current = flight.summary.field_elevation
 
-  // ---- add (or re-add after a basemap switch) the track layers ------------
+  // ---- (re)create the track sources + layers on the active style -----------
   function addTrackLayers(map) {
     const track = trackRef.current
-    if (!map.getSource('fv-track')) {
-      map.addSource('fv-track', { type: 'geojson', data: lineFeature(track) })
-    }
-    if (!map.getSource('fv-ends')) {
-      map.addSource('fv-ends', { type: 'geojson', data: endFeatures(track) })
-    }
-    if (!map.getSource('fv-cursor')) {
-      map.addSource('fv-cursor', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+    if (!map.getSource(DEM_SOURCE)) map.addSource(DEM_SOURCE, DEM_SPEC)
+    if (!map.getSource('fv-track')) map.addSource('fv-track', { type: 'geojson', data: lineFeature(track) })
+    if (!map.getSource('fv-ends')) map.addSource('fv-ends', { type: 'geojson', data: endFeatures(track) })
+    if (!map.getSource('fv-cursor')) map.addSource('fv-cursor', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+    if (!map.getSource('fv-track-3d')) map.addSource('fv-track-3d', { type: 'geojson', data: track3DFeatures(track, fieldElevRef.current) })
+
+    if (!map.getLayer('fv-track-3d-fill')) {
+      map.addLayer({
+        id: 'fv-track-3d-fill', type: 'fill-extrusion', source: 'fv-track-3d',
+        layout: { visibility: threeDRef.current ? 'visible' : 'none' },
+        paint: {
+          'fill-extrusion-color': TRACK_COLOR,
+          'fill-extrusion-base': ['get', 'base'],
+          'fill-extrusion-height': ['get', 'top'],
+          'fill-extrusion-opacity': 0.9,
+        },
+      })
     }
     if (!map.getLayer('fv-track-line')) {
       map.addLayer({
@@ -142,10 +230,8 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
       map.addLayer({
         id: 'fv-ends-circle', type: 'circle', source: 'fv-ends',
         paint: {
-          'circle-radius': 6,
-          'circle-color': ['get', 'color'],
-          'circle-stroke-color': RING,
-          'circle-stroke-width': 2,
+          'circle-radius': 6, 'circle-color': ['get', 'color'],
+          'circle-stroke-color': RING, 'circle-stroke-width': 2,
         },
       })
     }
@@ -153,13 +239,37 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
       map.addLayer({
         id: 'fv-cursor-circle', type: 'circle', source: 'fv-cursor',
         paint: {
-          'circle-radius': 5,
-          'circle-color': CURSOR_FILL,
-          'circle-stroke-color': TRACK_COLOR,
-          'circle-stroke-width': 2,
+          'circle-radius': 5, 'circle-color': CURSOR_FILL,
+          'circle-stroke-color': TRACK_COLOR, 'circle-stroke-width': 2,
         },
       })
     }
+  }
+
+  // Dark sky matching the GroundLink dark canvas. Feature-detected (setSky is
+  // available in maplibre-gl v4+); harmless to skip if not.
+  function applySky(map, on) {
+    if (typeof map.setSky !== 'function') return
+    try {
+      map.setSky(on ? {
+        'sky-color': '#0b1018', 'horizon-color': '#101725', 'fog-color': '#0b1018',
+        'fog-ground-blend': 0.6, 'horizon-fog-blend': 0.7, 'sky-horizon-blend': 0.8,
+      } : {})
+    } catch { /* style may not support sky yet */ }
+  }
+
+  // Apply / clear 3D terrain + sky. Pitch is driven separately so the slider
+  // and the toggle stay consistent.
+  function applyTerrain(map, on) {
+    try {
+      if (on) {
+        if (!map.getSource(DEM_SOURCE)) map.addSource(DEM_SOURCE, DEM_SPEC)
+        map.setTerrain({ source: DEM_SOURCE, exaggeration: TERRAIN_EXAGGERATION })
+      } else {
+        map.setTerrain(null)
+      }
+    } catch { /* DEM not ready yet — style.load re-applies */ }
+    applySky(map, on)
   }
 
   function fit(map) {
@@ -184,6 +294,8 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
       style: styleFor('imagery'),
       center,
       zoom: track.length ? 14 : 1,
+      pitch: 0,
+      maxPitch: 85,
       attributionControl: { compact: true },
     })
     mapRef.current = map
@@ -191,9 +303,19 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
       closeButton: false, closeOnClick: false, offset: 10, className: 'fv-map-popup',
     })
 
+    // Re-apply overlays after every style load (initial + each basemap switch).
+    // setStyle clears terrain (a style property) but keeps the camera; restore
+    // both so 3D survives a basemap switch.
+    map.on('style.load', () => {
+      addTrackLayers(map)
+      if (threeDRef.current) {
+        applyTerrain(map, true)
+        map.jumpTo({ pitch: pitchRef.current || 45, bearing: bearingRef.current })
+      }
+    })
+
     map.on('load', () => {
       readyRef.current = true
-      addTrackLayers(map)
       fit(map)
     })
 
@@ -226,22 +348,54 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
     const track = flight.track
     map.getSource('fv-track')?.setData(lineFeature(track))
     map.getSource('fv-ends')?.setData(endFeatures(track))
+    map.getSource('fv-track-3d')?.setData(track3DFeatures(track, flight.summary.field_elevation))
     map.getSource('fv-cursor')?.setData({ type: 'FeatureCollection', features: [] })
     popupRef.current?.remove()
     fit(map)
   }, [flight])
 
-  // ---- basemap switch (skip the no-op re-apply on mount) ------------------
-  // setStyle wipes all sources/layers; re-add the track once the new style has
-  // finished loading. 'idle' is the reliable "style + tiles ready" signal.
+  // ---- basemap switch -----------------------------------------------------
+  // setStyle wipes sources/layers; the persistent 'style.load' handler re-adds
+  // the track and re-applies terrain once the new style is ready.
   useEffect(() => {
     const map = mapRef.current
     if (!map || basemap === appliedBasemap.current) return
     appliedBasemap.current = basemap
-    map.setStyle(styleFor(basemap))
-    map.once('idle', () => { if (readyRef.current) addTrackLayers(map) })
+    // diff:false forces a clean reload (reliable style.load) instead of the
+    // raster↔vector diff path that throws benign tile-abort errors.
+    map.setStyle(styleFor(basemap), { diff: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basemap])
+
+  // ---- 3D terrain toggle --------------------------------------------------
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    threeDRef.current = threeD
+    if (map.getLayer('fv-track-3d-fill')) {
+      map.setLayoutProperty('fv-track-3d-fill', 'visibility', threeD ? 'visible' : 'none')
+    }
+    applyTerrain(map, threeD)
+    // Camera is driven one-way (state → map) by the pitch/bearing effects below;
+    // just set the target state here. Enabling pitches to 45°, disabling resets.
+    setPitch(threeD ? 45 : 0)
+    if (!threeD) setBearing(0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threeD])
+
+  // ---- pitch / bearing sliders (single source of truth: React → map) ------
+  useEffect(() => {
+    pitchRef.current = pitch
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    if (Math.round(map.getPitch()) !== pitch) map.easeTo({ pitch, duration: 400 })
+  }, [pitch])
+  useEffect(() => {
+    bearingRef.current = bearing
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    if (Math.round(map.getBearing()) !== bearing) map.easeTo({ bearing, duration: 400 })
+  }, [bearing])
 
   // ---- hover cursor synced from charts / map ------------------------------
   useEffect(() => {
@@ -255,7 +409,7 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
       : { type: 'FeatureCollection', features: [] })
   }, [hoverT, flight])
 
-  const current = BASEMAPS.find((b) => b.id === basemap) || BASEMAPS[0]
+  const toggleFlyout = (key) => setFlyout((cur) => (cur === key ? null : key))
 
   return (
     <>
@@ -271,27 +425,62 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
           <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14" /></svg>
         </button>
         <span className="map-rail__sep" aria-hidden="true" />
-        <button className={'map-rail__btn' + (flyout ? ' is-active' : '')} type="button"
-          aria-label="Basemap" aria-haspopup="true" aria-expanded={flyout}
-          title="Basemap & variants" onClick={() => setFlyout((v) => !v)}>
+        <button className={'map-rail__btn' + (flyout === 'basemap' ? ' is-active' : '')} type="button"
+          aria-label="Basemap" aria-haspopup="true" aria-expanded={flyout === 'basemap'}
+          title="Basemap & variants" onClick={() => toggleFlyout('basemap')}>
           <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 3l9 5-9 5-9-5 9-5z" /><path d="M3 13l9 5 9-5" />
           </svg>
         </button>
+        <button className={'map-rail__btn' + (flyout === 'view' ? ' is-active' : '') + (threeD ? ' is-on' : '')} type="button"
+          aria-label="View — 3D terrain, tilt" aria-haspopup="true" aria-expanded={flyout === 'view'}
+          title="View — 3D terrain, tilt, bearing" onClick={() => toggleFlyout('view')}>
+          <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 18l5.5-8 4 5.5L16 11l5 7H3z" /><path d="M16 5.5h.01" />
+          </svg>
+        </button>
       </div>
 
-      {flyout && (
+      {flyout === 'basemap' && (
         <div className="map-flyout" role="group" aria-label="Basemap">
           <div className="map-flyout__title">Basemap</div>
           <div className="basemap-variant-menu">
             {BASEMAPS.map((b) => (
               <button key={b.id} type="button"
                 className={'basemap-variant-menu__item' + (b.id === basemap ? ' is-active' : '')}
-                onClick={() => { setBasemap(b.id); setFlyout(false) }}>
+                onClick={() => { setBasemap(b.id); setFlyout(null) }}>
                 <span className="basemap-variant-menu__name">{b.label}</span>
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {flyout === 'view' && (
+        <div className="map-flyout" role="group" aria-label="View">
+          <div className="map-flyout__title">View</div>
+          <div className="map-flyout__row">
+            <button className={'map-flyout__toggle' + (threeD ? ' is-active' : '')} type="button"
+              aria-pressed={threeD} title="3D terrain relief (tilt + pitch)"
+              onClick={() => setThreeD((v) => !v)}>3D terrain</button>
+          </div>
+          {threeD && (
+            <div className="view-sliders" role="group" aria-label="3D view controls">
+              <div className="view-slider">
+                <label htmlFor="fvTilt">Tilt</label>
+                <input className="range" id="fvTilt" type="range" min="0" max="85" value={pitch}
+                  onChange={(e) => setPitch(Number(e.target.value))} />
+                <span className="view-slider__val">{pitch}°</span>
+              </div>
+              <div className="view-slider">
+                <label htmlFor="fvBearing">Bearing</label>
+                <input className="range" id="fvBearing" type="range" min="0" max="360" value={bearing}
+                  onChange={(e) => setBearing(Number(e.target.value))} />
+                <span className="view-slider__val">{bearing}° </span>
+              </div>
+            </div>
+          )}
+          <p className="map-flyout__hint">3D extrudes the track at its flight altitude above the terrain (AGL).</p>
         </div>
       )}
     </>

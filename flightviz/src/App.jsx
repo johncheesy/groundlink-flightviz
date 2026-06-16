@@ -2,8 +2,11 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import MapPanel from './components/MapPanel.jsx'
 import TelemetryPanel from './components/TelemetryPanel.jsx'
 import RFPanel from './components/RFPanel.jsx'
+import BatteryPanel from './components/BatteryPanel.jsx'
 import SummaryPanel from './components/SummaryPanel.jsx'
+import { PositionReadout, TrackStats } from './components/PositionPanel.jsx'
 import { normalizeFlights } from './loadData.js'
+import { downloadGPX } from './gpx.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 
@@ -191,6 +194,12 @@ export default function App() {
         <input ref={fileRef} type="file" accept=".json,.bin" multiple style={{ display: 'none' }}
           onChange={(e) => { handleFiles(e.target.files); e.target.value = '' }} />
 
+        <button className="btn btn--sm" type="button" disabled={!flight}
+          title="Export the selected flight as a GPX 1.1 track"
+          onClick={() => flight && downloadGPX(flight, activeSrc?.label || activeId, activeSrc?.label || activeId)}>
+          ⬇ Export GPX
+        </button>
+
         <div style={{ flex: 1 }} />
 
         <button className="btn btn--icon btn--ghost theme-toggle" type="button"
@@ -238,6 +247,18 @@ export default function App() {
               <SummaryPanel flight={flight} />
             </Group>
           )}
+
+          {flight && (
+            <Group title="Position">
+              <PositionReadout flight={flight} hoverT={hoverT} />
+            </Group>
+          )}
+
+          {flight && (
+            <Group title="Track stats">
+              <TrackStats flight={flight} />
+            </Group>
+          )}
         </div>
       </aside>
 
@@ -271,6 +292,7 @@ export default function App() {
             <div className="fv-drawer__head">
               <div className="fv-drawer__tabs">
                 <button className={'fv-tab' + (drawerTab === 'telemetry' ? ' is-active' : '')} type="button" onClick={() => openDrawerTab('telemetry')}>Telemetry</button>
+                <button className={'fv-tab' + (drawerTab === 'battery' ? ' is-active' : '')} type="button" onClick={() => openDrawerTab('battery')}>Battery</button>
                 <button className={'fv-tab' + (drawerTab === 'rf' ? ' is-active' : '')} type="button" onClick={() => openDrawerTab('rf')}>RF link</button>
               </div>
               <span className="fv-drawer__spacer" />
@@ -281,6 +303,8 @@ export default function App() {
             <div className="fv-drawer__body">
               {drawerTab === 'telemetry'
                 ? <TelemetryPanel flight={flight} onHover={onHover} />
+                : drawerTab === 'battery'
+                ? <BatteryPanel flight={flight} onHover={onHover} />
                 : <RFPanel flight={flight} hoverT={hoverT} onHover={onHover} />}
             </div>
           </div>

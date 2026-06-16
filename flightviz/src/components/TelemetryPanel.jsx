@@ -89,13 +89,6 @@ export default function TelemetryPanel({ flight, onHover }) {
     { title: 'Altitude', unit: 'm AMSL', data: t.altitude, lines: [{ key: 'alt', name: 'Alt', color: C.teal }] },
     { title: 'Ground speed', unit: 'm/s', data: t.speed, lines: [{ key: 'spd', name: 'Spd', color: C.azure }] },
     {
-      title: 'Battery', unit: 'V / A', data: t.battery,
-      lines: [
-        { key: 'volt', name: 'Volt', color: C.teal },
-        { key: 'curr', name: 'Curr', color: C.amber },
-      ],
-    },
-    {
       title: 'Vibration', unit: 'm/s²', data: t.vibe,
       lines: [
         { key: 'x', name: 'X', color: C.teal },
