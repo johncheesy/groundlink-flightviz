@@ -1,0 +1,9 @@
+# dependencies / build output
+node_modules/
+flightviz/dist/
+dist/
+
+# local tooling / OS
+.claude/
+.DS_Store
+*.log
