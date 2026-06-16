@@ -42,7 +42,19 @@ function normalizeFlight(raw, idx) {
     start_utc: s.start_utc ?? null,
     track_points: num(s.track_points, track.length),
     has_gps: s.has_gps === true,
+    rssi_min: num(s.rssi_min),
+    rssi_avg: num(s.rssi_avg),
+    rssi_max: num(s.rssi_max),
   }
+
+  // RF link: channels (C1..C8 µs), RSSI series, protocol + frequency.
+  const rcin = Array.isArray(f.rcin)
+    ? f.rcin.filter((p) => p && typeof p === 'object').map((p) => ({ ...p, t: num(p.t, 0) }))
+    : []
+  const rssi = Array.isArray(f.rssi)
+    ? f.rssi.filter((p) => p && typeof p === 'object' && num(p.rssi) != null)
+        .map((p) => ({ t: num(p.t, 0), rssi: num(p.rssi), lq: num(p.lq) }))
+    : []
 
   return {
     id: f.id ?? idx + 1,
@@ -52,6 +64,10 @@ function normalizeFlight(raw, idx) {
     telemetry,
     modes,
     summary,
+    rcin,
+    rssi,
+    rc_protocol: typeof f.rc_protocol === 'string' ? f.rc_protocol : null,
+    rc_freq_ghz: num(f.rc_freq_ghz),
   }
 }
 

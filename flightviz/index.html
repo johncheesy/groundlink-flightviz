@@ -1,9 +1,35 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GROUNDLINK FLIGHTVIZ</title>
+    <meta charset="utf-8" />
+    <!-- CSP mirrors GroundLink: external module scripts only, MapLibre needs
+         inline styles + blob workers; map tiles & vector styles over https. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' https: data: blob:; connect-src 'self' https: data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>GroundLink — FlightViz</title>
+    <meta
+      name="description"
+      content="Drone flight-log analysis — track, telemetry and RF link over a dark tactical map. A screen inside GroundLink."
+    />
+    <meta name="theme-color" content="#0a8475" />
+    <meta name="apple-mobile-web-app-title" content="FlightViz" />
+    <!-- Inline teal mast favicon (data URI — matches GroundLink). -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1117'/%3E%3Cg fill='none' stroke='%2334e6c2' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M16 27V12'/%3E%3Cpath d='M11 27h10'/%3E%3Cpath d='M16 12l-4 6h8l-4-6z' fill='%2334e6c2' stroke='none'/%3E%3Cpath d='M9.5 9a9 9 0 0 1 13 0' opacity='.85'/%3E%3Cpath d='M6.5 6a13.5 13.5 0 0 1 19 0' opacity='.5'/%3E%3C/g%3E%3C/svg%3E"
+    />
+
+    <!-- Sora (display) + Hanken Grotesk (body). No Inter/Roboto/Arial. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Sora:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <div id="root"></div>

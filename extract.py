@@ -50,6 +50,14 @@ MGRS_PRECISION = 5             # 1 m precision
 MAX_POINTS = 2000             # decimation cap per series
 GPS_EPOCH = datetime.datetime(1980, 1, 6, tzinfo=datetime.timezone.utc)
 
+# RC protocol (from the "RC Protocol: <name>" MSG line) -> link frequency in GHz.
+# Most modern RC links are 2.4 GHz; the long-range 900 MHz ELRS variant is 0.9.
+RC_FREQ_GHZ = {
+    "GHST": 2.4, "CRSF": 2.4, "ELRS": 2.4, "FRSKY": 2.4,
+    "DSM": 2.4, "DSMX": 2.4, "FPORT": 2.4, "SBUS": 2.4, "IBUS": 2.4,
+    "900ELRS": 0.9,
+}
+
 # ArduPilot Copter flight-mode number -> name
 COPTER_MODES = {
     0: "STABILIZE", 1: "ACRO", 2: "ALT_HOLD", 3: "AUTO", 4: "GUIDED",
@@ -129,7 +137,7 @@ def extract_flight(path, flight_id):
     mlog = mavutil.mavlink_connection(path)
 
     raw = {t: [] for t in ("GPS", "POS", "AHR2", "ATT", "MODE",
-                            "BAT", "VIBE", "RCIN", "RSSI")}
+                            "BAT", "VIBE", "RCIN", "RSSI", "MSG")}
     t0 = None  # first TimeUS (boot-relative origin)
 
     while True:
@@ -241,12 +249,22 @@ def extract_flight(path, flight_id):
         "battery":  series(raw["BAT"], {"volt": ["Volt"], "curr": ["Curr"], "currtot": ["CurrTot"]}),
         "vibe":     series(raw["VIBE"], {"x": ["VibeX"], "y": ["VibeY"], "z": ["VibeZ"]}),
     }
+    # ----- RF link: RSSI + RCIN channels + protocol/frequency ---------------
+    # RSSI -> [{t, rssi, lq}]. ArduPilot's RXRSSI is a 0..1 receiver-strength
+    # fraction for CRSF-family links; pass it through unscaled and keep RXLQ.
     rssi = series(raw["RSSI"], {"rssi": ["RXRSSI", "RSSI"], "lq": ["RXLQ"]})
-    if rssi:
-        telemetry["rssi"] = rssi
-    rcin = series(raw["RCIN"], {"c1": ["C1"], "c2": ["C2"], "c3": ["C3"], "c4": ["C4"]})
-    if rcin:
-        telemetry["rcin"] = rcin
+
+    # RCIN -> [{t, c1..c8}]. Channels are PWM microseconds (1000..2000 typical).
+    rcin = series(raw["RCIN"], {f"c{i}": [f"C{i}"] for i in range(1, 9)})
+
+    # RC protocol from the boot-time MSG line "RC Protocol: GHST".
+    rc_protocol = None
+    for mrow in raw["MSG"]:
+        txt = mrow.get("Message")
+        if isinstance(txt, str) and "RC Protocol:" in txt:
+            rc_protocol = txt.split("RC Protocol:", 1)[1].strip()
+            break
+    rc_freq_ghz = RC_FREQ_GHZ.get(rc_protocol.upper(), None) if rc_protocol else None
 
     # ----- modes ------------------------------------------------------------
     modes = []
@@ -271,6 +289,8 @@ def extract_flight(path, flight_id):
     max_speed = max((p["spd"] for p in track if p["spd"] is not None), default=None)
     start_utc = next((p["utc"] for p in track if p["utc"]), None)
 
+    rssi_vals = [p["rssi"] for p in rssi if p.get("rssi") is not None]
+
     summary = {
         "max_alt": round(max_alt, 2) if max_alt is not None else None,
         "max_speed": round(max_speed, 2) if max_speed is not None else None,
@@ -280,6 +300,9 @@ def extract_flight(path, flight_id):
         "start_utc": start_utc,
         "track_points": len(track),
         "has_gps": have_gps,
+        "rssi_min": round(min(rssi_vals), 3) if rssi_vals else None,
+        "rssi_avg": round(sum(rssi_vals) / len(rssi_vals), 3) if rssi_vals else None,
+        "rssi_max": round(max(rssi_vals), 3) if rssi_vals else None,
     }
 
     return {
@@ -290,6 +313,10 @@ def extract_flight(path, flight_id):
         "telemetry": telemetry,
         "modes": modes,
         "summary": summary,
+        "rcin": rcin,
+        "rssi": rssi,
+        "rc_protocol": rc_protocol,
+        "rc_freq_ghz": rc_freq_ghz,
     }
 
 

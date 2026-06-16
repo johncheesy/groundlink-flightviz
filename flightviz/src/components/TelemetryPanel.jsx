@@ -4,65 +4,67 @@ import {
   ResponsiveContainer, ReferenceLine,
 } from 'recharts'
 
-const AX = '#1c2529'
-const SYNC = 'flt'
+// Theme-independent feature/coverage hexes (GroundLink tokens) — recharts needs
+// literal colours, and these read on both the light UI and the dark map.
+export const C = {
+  azure: '#46a6ff', teal: '#34e6c2', amber: '#ffd479', rose: '#ff6b8a',
+  green: '#86e6a0', dim: '#8a93a6',
+}
+const GRID = 'rgba(128,140,160,0.18)'
+export const SYNC = 'flt'
 
-function fmtT(t) {
+export function fmtT(t) {
   const m = Math.floor(t / 60)
   const s = Math.floor(t % 60)
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-function ChartTip({ active, payload, label, unit }) {
+export function ChartTip({ active, payload, label, unit }) {
   if (!active || !payload || !payload.length) return null
   return (
-    <div className="rc-tooltip">
-      <div className="t">T+{Number(label).toFixed(1)}s</div>
+    <div className="fv-tip">
+      <div className="fv-tip__t">T+{Number(label).toFixed(1)} s</div>
       {payload.map((p) => (
-        <div className="row" key={p.dataKey}>
+        <div className="fv-tip__row" key={p.dataKey}>
           <span className="nm" style={{ color: p.color }}>{p.name}</span>
-          <span>{typeof p.value === 'number' ? p.value.toFixed(2) : p.value}{unit ? ' ' + unit : ''}</span>
+          <span className="v">{typeof p.value === 'number' ? p.value.toFixed(2) : p.value}{unit ? ' ' + unit : ''}</span>
         </div>
       ))}
     </div>
   )
 }
 
-function Chart({ title, unit, data, lines, modes, maxT, onHover, legend }) {
+export function Chart({ title, unit, data, lines, modes = [], maxT, onHover, height = 116 }) {
   if (!data || !data.length) return null
   return (
-    <div className="chart-block">
-      <div className="chart-label">
+    <div className="fv-chart">
+      <div className="fv-chart__label">
         <span>{title}{unit ? ` · ${unit}` : ''}</span>
-        <span className="legend">
-          {legend.map((l) => (
+        <span className="fv-chart__legend">
+          {lines.map((l) => (
             <span key={l.key}><i style={{ color: l.color }}>━</i>{l.name}</span>
           ))}
         </span>
       </div>
-      <ResponsiveContainer width="100%" height={118}>
+      <ResponsiveContainer width="100%" height={height}>
         <LineChart data={data} syncId={SYNC} syncMethod="value"
-          margin={{ top: 4, right: 10, bottom: 0, left: -18 }}
+          margin={{ top: 4, right: 12, bottom: 0, left: -14 }}
           onMouseMove={(s) => { if (s && s.activeLabel != null) onHover(Number(s.activeLabel)) }}
           onMouseLeave={() => onHover(null)}>
-          <CartesianGrid stroke={AX} strokeDasharray="2 4" vertical={false} />
+          <CartesianGrid stroke={GRID} strokeDasharray="2 4" vertical={false} />
           <XAxis dataKey="t" type="number" domain={[0, maxT]}
-            tickFormatter={fmtT} stroke={AX} tick={{ fontSize: 9 }}
+            tickFormatter={fmtT} stroke={GRID} tick={{ fontSize: 9 }}
             allowDecimals={false} minTickGap={40} />
-          <YAxis stroke={AX} tick={{ fontSize: 9 }} width={42}
-            domain={['auto', 'auto']} />
+          <YAxis stroke={GRID} tick={{ fontSize: 9 }} width={44} domain={['auto', 'auto']} />
           <Tooltip content={<ChartTip unit={unit} />} isAnimationActive={false}
-            cursor={{ stroke: '#1fd6c4', strokeWidth: 1, strokeOpacity: 0.5 }} />
+            cursor={{ stroke: C.teal, strokeWidth: 1, strokeOpacity: 0.6 }} />
           {modes.map((m, i) => (
-            <ReferenceLine key={i} x={m.t} stroke="#d6a31f" strokeOpacity={0.5}
-              strokeDasharray="3 3"
-              label={{ value: m.mode_name, position: 'top', fill: '#d6a31f',
-                fontSize: 8, fontFamily: 'monospace' }} />
+            <ReferenceLine key={i} x={m.t} stroke={C.amber} strokeOpacity={0.55} strokeDasharray="3 3"
+              label={{ value: m.mode_name, position: 'top', fill: C.amber, fontSize: 8, fontFamily: 'var(--ui)' }} />
           ))}
           {lines.map((l) => (
             <Line key={l.key} dataKey={l.key} name={l.name} stroke={l.color}
-              dot={false} strokeWidth={1.3} isAnimationActive={false}
-              connectNulls type="monotone" />
+              dot={false} strokeWidth={1.4} isAnimationActive={false} connectNulls type="monotone" />
           ))}
         </LineChart>
       </ResponsiveContainer>
@@ -77,57 +79,39 @@ export default function TelemetryPanel({ flight, onHover }) {
 
   const charts = useMemo(() => ([
     {
-      title: 'ATTITUDE', unit: 'deg', data: t.attitude,
+      title: 'Attitude', unit: 'deg', data: t.attitude,
       lines: [
-        { key: 'roll', name: 'ROLL', color: '#1fd6c4' },
-        { key: 'pitch', name: 'PITCH', color: '#8fb7bb' },
-        { key: 'yaw', name: 'YAW', color: '#d6a31f' },
+        { key: 'roll', name: 'Roll', color: C.teal },
+        { key: 'pitch', name: 'Pitch', color: C.azure },
+        { key: 'yaw', name: 'Yaw', color: C.amber },
+      ],
+    },
+    { title: 'Altitude', unit: 'm AMSL', data: t.altitude, lines: [{ key: 'alt', name: 'Alt', color: C.teal }] },
+    { title: 'Ground speed', unit: 'm/s', data: t.speed, lines: [{ key: 'spd', name: 'Spd', color: C.azure }] },
+    {
+      title: 'Battery', unit: 'V / A', data: t.battery,
+      lines: [
+        { key: 'volt', name: 'Volt', color: C.teal },
+        { key: 'curr', name: 'Curr', color: C.amber },
       ],
     },
     {
-      title: 'ALTITUDE', unit: 'm AMSL', data: t.altitude,
-      lines: [{ key: 'alt', name: 'ALT', color: '#1fd6c4' }],
-    },
-    {
-      title: 'GROUND SPEED', unit: 'm/s', data: t.speed,
-      lines: [{ key: 'spd', name: 'SPD', color: '#1fd6c4' }],
-    },
-    {
-      title: 'BATTERY', unit: 'V / A', data: t.battery,
+      title: 'Vibration', unit: 'm/s²', data: t.vibe,
       lines: [
-        { key: 'volt', name: 'VOLT', color: '#1fd6c4' },
-        { key: 'curr', name: 'CURR', color: '#d6a31f' },
+        { key: 'x', name: 'X', color: C.teal },
+        { key: 'y', name: 'Y', color: C.azure },
+        { key: 'z', name: 'Z', color: C.rose },
       ],
     },
-    {
-      title: 'VIBRATION', unit: 'm/s²', data: t.vibe,
-      lines: [
-        { key: 'x', name: 'X', color: '#1fd6c4' },
-        { key: 'y', name: 'Y', color: '#8fb7bb' },
-        { key: 'z', name: 'Z', color: '#d65a4a' },
-      ],
-    },
-    t.rssi && {
-      title: 'RC LINK', unit: 'rssi / lq', data: t.rssi,
-      lines: [
-        { key: 'rssi', name: 'RSSI', color: '#1fd6c4' },
-        { key: 'lq', name: 'LQ', color: '#8fb7bb' },
-      ],
-    },
-  ].filter(Boolean)), [t])
+  ].filter((c) => c.data && c.data.length)), [t])
+
+  if (!charts.length) return <div className="fv-empty">No telemetry series in this flight.</div>
 
   return (
-    <div className="panel telem-panel">
-      <div className="panel-head">
-        <span className="panel-title">TELEMETRY · {flight.filename}</span>
-        <span className="panel-title" style={{ color: '#d6a31f' }}>┊ MODE CHANGE</span>
-      </div>
-      <div className="telem-scroll">
-        {charts.map((c) => (
-          <Chart key={c.title} {...c} modes={modes} maxT={maxT}
-            onHover={onHover} legend={c.lines} />
-        ))}
-      </div>
+    <div>
+      {charts.map((c) => (
+        <Chart key={c.title} {...c} modes={modes} maxT={maxT} onHover={onHover} />
+      ))}
     </div>
   )
 }

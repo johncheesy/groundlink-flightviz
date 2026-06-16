@@ -1,8 +1,52 @@
-import { useMemo, useRef, useState, useEffect } from 'react'
-import { MapContainer, TileLayer, Polyline, CircleMarker, useMap, useMapEvents, LayerGroup, Tooltip } from 'react-leaflet'
+import { useEffect, useRef, useState } from 'react'
+import maplibregl from 'maplibre-gl'
 
-// nearest track point to a given lat/lng (planar approx — fine at flight scale)
-function nearest(track, lat, lng) {
+// On-map feature colours. MapLibre paint needs literal colour values, so these
+// mirror the GroundLink tokens (--feat-track azure, --mapring white) rather
+// than reading the CSS variables at runtime.
+const TRACK_COLOR = '#46a6ff' // var(--feat-track)
+const RING = '#ffffff' // var(--mapring)
+const START_COLOR = '#34e6c2' // teal-green start
+const END_COLOR = '#ff5b5b' // red end
+const CURSOR_FILL = '#ffffff'
+
+// Esri World Imagery is the default dark basemap; OpenTopoMap + OpenFreeMap
+// Bright are the alternates (mirrors GroundLink's basemap flyout).
+const BASEMAPS = [
+  {
+    id: 'imagery', label: 'Esri World Imagery', kind: 'raster',
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+    maxzoom: 19,
+    attribution: 'Imagery © Esri, Maxar, Earthstar Geographics',
+  },
+  {
+    id: 'topo', label: 'OpenTopoMap', kind: 'raster',
+    tiles: ['https://tile.opentopomap.org/{z}/{x}/{y}.png'],
+    maxzoom: 17,
+    attribution: '© OpenTopoMap (CC-BY-SA) · © OpenStreetMap contributors',
+  },
+  {
+    id: 'bright', label: 'OpenFreeMap Bright', kind: 'style',
+    url: 'https://tiles.openfreemap.org/styles/bright',
+  },
+]
+
+function rasterStyle(bm) {
+  return {
+    version: 8,
+    sources: {
+      base: { type: 'raster', tiles: bm.tiles, tileSize: 256, maxzoom: bm.maxzoom, attribution: bm.attribution },
+    },
+    layers: [{ id: 'base', type: 'raster', source: 'base' }],
+  }
+}
+
+function styleFor(id) {
+  const bm = BASEMAPS.find((b) => b.id === id) || BASEMAPS[0]
+  return bm.kind === 'style' ? bm.url : rasterStyle(bm)
+}
+
+function nearest(track, lng, lat) {
   let best = null, bd = Infinity
   for (const p of track) {
     const d = (p.lat - lat) ** 2 + (p.lon - lng) ** 2
@@ -11,7 +55,6 @@ function nearest(track, lat, lng) {
   return best
 }
 
-// point at (or nearest to) a given time t
 function atTime(track, t) {
   if (t == null || !track.length) return null
   let best = track[0], bd = Infinity
@@ -22,144 +65,235 @@ function atTime(track, t) {
   return best
 }
 
-function FitBounds({ track }) {
-  const map = useMap()
-  useEffect(() => {
-    if (!track.length) return
-    const lls = track.map((p) => [p.lat, p.lon])
-    const fit = () => {
-      map.invalidateSize(false)
-      map.fitBounds(lls, { padding: [28, 28] })
-    }
-    fit()
-    const t = setTimeout(fit, 250) // re-fit once the flex layout has settled
-    // keep the map correctly sized if the window/panel resizes
-    const ro = new ResizeObserver(() => map.invalidateSize(false))
-    ro.observe(map.getContainer())
-    return () => { clearTimeout(t); ro.disconnect() }
-  }, [track, map])
-  return null
-}
-
-function HoverTracker({ track, setHoverT, setReadout }) {
-  useMapEvents({
-    mousemove(e) {
-      const p = nearest(track, e.latlng.lat, e.latlng.lng)
-      if (p) { setReadout(p); setHoverT(p.t) }
-    },
-    mouseout() { setReadout(null); setHoverT(null) },
-  })
-  return null
-}
-
-// Metric graticule (~500 m), aligned to flight area. Full MGRS string per point
-// is shown in the hover readout (computed offline at MGRSPrecision=5).
-function Graticule({ track }) {
-  const map = useMap()
-  const [lines, setLines] = useState([])
-
-  useEffect(() => {
-    function build() {
-      const b = map.getBounds()
-      const STEP_M = 500
-      const midLat = (b.getNorth() + b.getSouth()) / 2
-      const dLat = STEP_M / 111320
-      const dLon = STEP_M / (111320 * Math.cos((midLat * Math.PI) / 180))
-      const out = []
-      const s = Math.floor(b.getSouth() / dLat) * dLat
-      const w = Math.floor(b.getWest() / dLon) * dLon
-      for (let lat = s; lat <= b.getNorth(); lat += dLat) {
-        out.push({ pts: [[lat, b.getWest()], [lat, b.getEast()]], horiz: true, v: lat })
-      }
-      for (let lon = w; lon <= b.getEast(); lon += dLon) {
-        out.push({ pts: [[b.getSouth(), lon], [b.getNorth(), lon]], horiz: false, v: lon })
-      }
-      setLines(out)
-    }
-    build()
-    map.on('moveend zoomend', build)
-    return () => map.off('moveend zoomend', build)
-  }, [map, track])
-
+function popupHTML(p) {
+  const time = p.utc ? p.utc : 'T+' + p.t.toFixed(1) + ' s'
+  const alt = p.alt != null ? p.alt.toFixed(1) + ' m' : '—'
   return (
-    <LayerGroup>
-      {lines.map((l, i) => (
-        <Polyline key={i} positions={l.pts}
-          pathOptions={{ color: '#1fd6c4', weight: 0.5, opacity: 0.28, interactive: false }} />
-      ))}
-    </LayerGroup>
+    `<div class="fv-popup">` +
+    `<div class="fv-popup__mgrs">${p.mgrs || '— no MGRS —'}</div>` +
+    `<div class="fv-popup__row"><span class="k">UTC</span><span class="v">${time}</span></div>` +
+    `<div class="fv-popup__row"><span class="k">ALT</span><span class="v">${alt}</span></div>` +
+    `</div>`
   )
 }
 
-export default function MapPanel({ flight, hoverT, setHoverT, grid, setGrid }) {
-  const track = flight.track
-  const [readout, setReadout] = useState(null)
+function lineFeature(track) {
+  return {
+    type: 'Feature',
+    geometry: { type: 'LineString', coordinates: track.map((p) => [p.lon, p.lat]) },
+    properties: {},
+  }
+}
 
-  const center = useMemo(() => {
-    if (!track.length) return [0, 0]
-    const m = track[Math.floor(track.length / 2)]
-    return [m.lat, m.lon]
-  }, [track])
+function endFeatures(track) {
+  if (!track.length) return { type: 'FeatureCollection', features: [] }
+  const mk = (p, role, color) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+    properties: { role, color },
+  })
+  return {
+    type: 'FeatureCollection',
+    features: [
+      mk(track[0], 'start', START_COLOR),
+      mk(track[track.length - 1], 'end', END_COLOR),
+    ],
+  }
+}
 
-  const path = useMemo(() => track.map((p) => [p.lat, p.lon]), [track])
-  const start = track[0]
-  const end = track[track.length - 1]
-  const marker = atTime(track, hoverT)
-  const shown = readout || marker
+export default function MapPanel({ flight, hoverT, setHoverT }) {
+  const containerRef = useRef(null)
+  const mapRef = useRef(null)
+  const popupRef = useRef(null)
+  const trackRef = useRef(flight.track)
+  const readyRef = useRef(false)
+  const appliedBasemap = useRef('imagery') // basemap the current style already shows
+  const [basemap, setBasemap] = useState('imagery')
+  const [flyout, setFlyout] = useState(false)
+
+  trackRef.current = flight.track
+
+  // ---- add (or re-add after a basemap switch) the track layers ------------
+  function addTrackLayers(map) {
+    const track = trackRef.current
+    if (!map.getSource('fv-track')) {
+      map.addSource('fv-track', { type: 'geojson', data: lineFeature(track) })
+    }
+    if (!map.getSource('fv-ends')) {
+      map.addSource('fv-ends', { type: 'geojson', data: endFeatures(track) })
+    }
+    if (!map.getSource('fv-cursor')) {
+      map.addSource('fv-cursor', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+    }
+    if (!map.getLayer('fv-track-line')) {
+      map.addLayer({
+        id: 'fv-track-line', type: 'line', source: 'fv-track',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': TRACK_COLOR, 'line-width': 2.5, 'line-opacity': 0.95 },
+      })
+    }
+    if (!map.getLayer('fv-track-hit')) {
+      map.addLayer({
+        id: 'fv-track-hit', type: 'line', source: 'fv-track',
+        paint: { 'line-color': TRACK_COLOR, 'line-width': 14, 'line-opacity': 0 },
+      })
+    }
+    if (!map.getLayer('fv-ends-circle')) {
+      map.addLayer({
+        id: 'fv-ends-circle', type: 'circle', source: 'fv-ends',
+        paint: {
+          'circle-radius': 6,
+          'circle-color': ['get', 'color'],
+          'circle-stroke-color': RING,
+          'circle-stroke-width': 2,
+        },
+      })
+    }
+    if (!map.getLayer('fv-cursor-circle')) {
+      map.addLayer({
+        id: 'fv-cursor-circle', type: 'circle', source: 'fv-cursor',
+        paint: {
+          'circle-radius': 5,
+          'circle-color': CURSOR_FILL,
+          'circle-stroke-color': TRACK_COLOR,
+          'circle-stroke-width': 2,
+        },
+      })
+    }
+  }
+
+  function fit(map) {
+    const track = trackRef.current
+    if (!track.length) return
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const p of track) {
+      if (p.lon < minX) minX = p.lon
+      if (p.lon > maxX) maxX = p.lon
+      if (p.lat < minY) minY = p.lat
+      if (p.lat > maxY) maxY = p.lat
+    }
+    map.fitBounds([[minX, minY], [maxX, maxY]], { padding: 60, maxZoom: 17, duration: 0 })
+  }
+
+  // ---- create the map once ------------------------------------------------
+  useEffect(() => {
+    const track = trackRef.current
+    const center = track.length ? [track[0].lon, track[0].lat] : [0, 0]
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: styleFor('imagery'),
+      center,
+      zoom: track.length ? 14 : 1,
+      attributionControl: { compact: true },
+    })
+    mapRef.current = map
+    popupRef.current = new maplibregl.Popup({
+      closeButton: false, closeOnClick: false, offset: 10, className: 'fv-map-popup',
+    })
+
+    map.on('load', () => {
+      readyRef.current = true
+      addTrackLayers(map)
+      fit(map)
+    })
+
+    const onMove = (e) => {
+      const p = nearest(trackRef.current, e.lngLat.lng, e.lngLat.lat)
+      if (!p) return
+      popupRef.current.setLngLat([p.lon, p.lat]).setHTML(popupHTML(p)).addTo(map)
+      setHoverT(p.t)
+      map.getCanvas().style.cursor = 'crosshair'
+    }
+    const onLeave = () => {
+      popupRef.current.remove()
+      setHoverT(null)
+      map.getCanvas().style.cursor = ''
+    }
+    map.on('mousemove', 'fv-track-hit', onMove)
+    map.on('mouseleave', 'fv-track-hit', onLeave)
+
+    const ro = new ResizeObserver(() => map.resize())
+    ro.observe(containerRef.current)
+
+    return () => { ro.disconnect(); map.remove(); mapRef.current = null; readyRef.current = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ---- flight change: update geometry + refit -----------------------------
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    const track = flight.track
+    map.getSource('fv-track')?.setData(lineFeature(track))
+    map.getSource('fv-ends')?.setData(endFeatures(track))
+    map.getSource('fv-cursor')?.setData({ type: 'FeatureCollection', features: [] })
+    popupRef.current?.remove()
+    fit(map)
+  }, [flight])
+
+  // ---- basemap switch (skip the no-op re-apply on mount) ------------------
+  // setStyle wipes all sources/layers; re-add the track once the new style has
+  // finished loading. 'idle' is the reliable "style + tiles ready" signal.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || basemap === appliedBasemap.current) return
+    appliedBasemap.current = basemap
+    map.setStyle(styleFor(basemap))
+    map.once('idle', () => { if (readyRef.current) addTrackLayers(map) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [basemap])
+
+  // ---- hover cursor synced from charts / map ------------------------------
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    const src = map.getSource('fv-cursor')
+    if (!src) return
+    const p = atTime(flight.track, hoverT)
+    src.setData(p
+      ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lon, p.lat] }, properties: {} }] }
+      : { type: 'FeatureCollection', features: [] })
+  }, [hoverT, flight])
+
+  const current = BASEMAPS.find((b) => b.id === basemap) || BASEMAPS[0]
 
   return (
-    <div className="panel map-panel">
-      <div className="panel-head">
-        <span className="panel-title">TACTICAL MAP · OSM</span>
-        <button className={'toggle-btn' + (grid ? ' on' : '')}
-          onClick={() => setGrid(!grid)}>GRID {grid ? 'ON' : 'OFF'}</button>
-      </div>
-      <div className="map-wrap">
-        <MapContainer center={center} zoom={15} zoomControl={true} preferCanvas={true}
-          attributionControl={true} style={{ height: '100%', width: '100%' }}>
-          <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution='&copy; OpenStreetMap'
-            maxZoom={19} />
-          <FitBounds track={track} />
-          {grid && <Graticule track={track} />}
-          {path.length > 1 && (
-            <Polyline positions={path}
-              pathOptions={{ color: '#1fd6c4', weight: 2, opacity: 0.9 }} />
-          )}
-          {start && (
-            <CircleMarker center={[start.lat, start.lon]} radius={6}
-              pathOptions={{ color: '#2bd66a', fillColor: '#2bd66a', fillOpacity: 0.9, weight: 2 }}>
-              <Tooltip direction="top">START</Tooltip>
-            </CircleMarker>
-          )}
-          {end && (
-            <CircleMarker center={[end.lat, end.lon]} radius={6}
-              pathOptions={{ color: '#d65a4a', fillColor: '#d65a4a', fillOpacity: 0.9, weight: 2 }}>
-              <Tooltip direction="top">END</Tooltip>
-            </CircleMarker>
-          )}
-          {marker && (
-            <CircleMarker center={[marker.lat, marker.lon]} radius={5}
-              pathOptions={{ color: '#ffffff', fillColor: '#1fd6c4', fillOpacity: 1, weight: 2 }} />
-          )}
-          <HoverTracker track={track} setHoverT={setHoverT} setReadout={setReadout} />
-        </MapContainer>
+    <>
+      <div ref={containerRef} className="fv-map" />
 
-        <div className="map-readout">
-          {shown ? (
-            <>
-              <div><span className="k">MGRS </span><span className="mgrs">{shown.mgrs || '—'}</span></div>
-              <div><span className="k">LAT  </span><span className="v">{shown.lat.toFixed(7)}</span></div>
-              <div><span className="k">LON  </span><span className="v">{shown.lon.toFixed(7)}</span></div>
-              <div><span className="k">ALT  </span><span className="v">{shown.alt != null ? shown.alt.toFixed(1) + ' m' : '—'}</span></div>
-              <div><span className="k">TIME </span><span className="v">{shown.utc ? shown.utc : 'T+' + shown.t.toFixed(1) + 's'}</span></div>
-            </>
-          ) : (
-            <div className="k">HOVER TRACK FOR FIX DATA</div>
-          )}
-        </div>
+      <div className="map-rail" role="toolbar" aria-orientation="vertical" aria-label="Map tools">
+        <button className="map-rail__btn" type="button" aria-label="Zoom in"
+          onClick={() => mapRef.current?.zoomIn()}>
+          <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+        </button>
+        <button className="map-rail__btn" type="button" aria-label="Zoom out"
+          onClick={() => mapRef.current?.zoomOut()}>
+          <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14" /></svg>
+        </button>
+        <span className="map-rail__sep" aria-hidden="true" />
+        <button className={'map-rail__btn' + (flyout ? ' is-active' : '')} type="button"
+          aria-label="Basemap" aria-haspopup="true" aria-expanded={flyout}
+          title="Basemap & variants" onClick={() => setFlyout((v) => !v)}>
+          <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3l9 5-9 5-9-5 9-5z" /><path d="M3 13l9 5 9-5" />
+          </svg>
+        </button>
       </div>
-    </div>
+
+      {flyout && (
+        <div className="map-flyout" role="group" aria-label="Basemap">
+          <div className="map-flyout__title">Basemap</div>
+          <div className="basemap-variant-menu">
+            {BASEMAPS.map((b) => (
+              <button key={b.id} type="button"
+                className={'basemap-variant-menu__item' + (b.id === basemap ? ' is-active' : '')}
+                onClick={() => { setBasemap(b.id); setFlyout(false) }}>
+                <span className="basemap-variant-menu__name">{b.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   )
 }
