@@ -23,6 +23,18 @@ const DEM_SPEC = {
 }
 const TERRAIN_EXAGGERATION = 1.5
 
+// OpenFreeMap vector tiles — free, keyless OSM (OpenMapTiles schema). The
+// `building` source-layer carries render_height / render_min_height, exactly
+// what fill-extrusion needs. Mirrors GroundLink's basemaps.js (OPENFREEMAP +
+// BUILDINGS_LAYER): declared up-front in the raster styles but hidden; the 3D
+// toggle makes it visible alongside terrain. minzoom 14 keeps extrusion where
+// it reads and the map performant.
+const OFM_SOURCE = 'openfreemap'
+const OFM_URL = 'https://tiles.openfreemap.org/planet'
+const OFM_ATTRIB = 'Buildings: © OpenFreeMap · © OpenStreetMap contributors'
+const BUILDINGS_LAYER = 'buildings-3d'
+const BUILDING_COLOR = '#3b4250' // muted neutral surface on the dark map (not a bright fill)
+
 // The exact basemap set GroundLink ships (src/map/basemaps.js): Esri World
 // Imagery (default dark satellite), PDOK NL ortho, EOX Sentinel-2, OpenTopoMap,
 // OpenFreeMap Bright. PDOK/EOX use RESTful WMTS XYZ endpoints (token-free).
@@ -62,10 +74,28 @@ function rasterStyle(bm) {
     version: 8,
     sources: {
       base: { type: 'raster', tiles: bm.tiles, tileSize: 256, maxzoom: bm.maxzoom, attribution: bm.attribution },
+      // OpenFreeMap vector buildings, declared up-front but hidden (the 3D
+      // toggle reveals them). Only the OpenFreeMap *style* basemap embeds its
+      // own buildings — for every raster basemap we supply them here.
+      [OFM_SOURCE]: { type: 'vector', url: OFM_URL, attribution: OFM_ATTRIB },
     },
     layers: [
       { id: 'bg', type: 'background', paint: { 'background-color': MAP_BG } },
       { id: 'base', type: 'raster', source: 'base' },
+      {
+        id: BUILDINGS_LAYER,
+        type: 'fill-extrusion',
+        source: OFM_SOURCE,
+        'source-layer': 'building',
+        minzoom: 14,
+        layout: { visibility: 'none' },
+        paint: {
+          'fill-extrusion-color': BUILDING_COLOR,
+          'fill-extrusion-height': ['get', 'render_height'],
+          'fill-extrusion-base': ['get', 'render_min_height'],
+          'fill-extrusion-opacity': 0.85,
+        },
+      },
     ],
   }
 }
@@ -272,6 +302,15 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
     applySky(map, on)
   }
 
+  // Show/hide the OpenFreeMap building extrusion. Tied to the 3D toggle exactly
+  // like GroundLink's set3D (= setTerrain + setBuildings). No-op when the layer
+  // is absent — the OpenFreeMap *style* basemap ships its own buildings, so we
+  // never add ours on top of it (mirrors GroundLink's setBuildings guard).
+  function applyBuildings(map, on) {
+    if (!map.getLayer(BUILDINGS_LAYER)) return
+    map.setLayoutProperty(BUILDINGS_LAYER, 'visibility', on ? 'visible' : 'none')
+  }
+
   function fit(map) {
     const track = trackRef.current
     if (!track.length) return
@@ -310,6 +349,7 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
       addTrackLayers(map)
       if (threeDRef.current) {
         applyTerrain(map, true)
+        applyBuildings(map, true)
         map.jumpTo({ pitch: pitchRef.current || 45, bearing: bearingRef.current })
       }
     })
@@ -376,6 +416,7 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
       map.setLayoutProperty('fv-track-3d-fill', 'visibility', threeD ? 'visible' : 'none')
     }
     applyTerrain(map, threeD)
+    applyBuildings(map, threeD)
     // Camera is driven one-way (state → map) by the pitch/bearing effects below;
     // just set the target state here. Enabling pitches to 45°, disabling resets.
     setPitch(threeD ? 45 : 0)
@@ -480,7 +521,7 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
               </div>
             </div>
           )}
-          <p className="map-flyout__hint">3D extrudes the track at its flight altitude above the terrain (AGL).</p>
+          <p className="map-flyout__hint">3D adds terrain relief and extruded buildings (from zoom 14), and lifts the track to its flight altitude above the terrain (AGL).</p>
         </div>
       )}
     </>
