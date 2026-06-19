@@ -210,12 +210,14 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
   const fieldElevRef = useRef(flight.summary.field_elevation)
   const readyRef = useRef(false)
   const threeDRef = useRef(false) // read inside style.load handler
+  const buildingsRef = useRef(false) // read inside style.load handler
   const pitchRef = useRef(0)
   const bearingRef = useRef(0)
   const appliedBasemap = useRef('imagery')
   const [basemap, setBasemap] = useState('imagery')
   const [flyout, setFlyout] = useState(null) // 'basemap' | 'view' | null
   const [threeD, setThreeD] = useState(false)
+  const [buildings, setBuildings] = useState(false)
   const [pitch, setPitch] = useState(0)
   const [bearing, setBearing] = useState(0)
 
@@ -302,10 +304,10 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
     applySky(map, on)
   }
 
-  // Show/hide the OpenFreeMap building extrusion. Tied to the 3D toggle exactly
-  // like GroundLink's set3D (= setTerrain + setBuildings). No-op when the layer
-  // is absent — the OpenFreeMap *style* basemap ships its own buildings, so we
-  // never add ours on top of it (mirrors GroundLink's setBuildings guard).
+  // Show/hide the OpenFreeMap building extrusion. Driven by its own toggle,
+  // independent of 3D terrain. No-op when the layer is absent — the OpenFreeMap
+  // *style* basemap ships its own buildings, so we never add ours on top of it
+  // (mirrors GroundLink's setBuildings guard).
   function applyBuildings(map, on) {
     if (!map.getLayer(BUILDINGS_LAYER)) return
     map.setLayoutProperty(BUILDINGS_LAYER, 'visibility', on ? 'visible' : 'none')
@@ -347,9 +349,9 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
     // both so 3D survives a basemap switch.
     map.on('style.load', () => {
       addTrackLayers(map)
+      applyBuildings(map, buildingsRef.current)
       if (threeDRef.current) {
         applyTerrain(map, true)
-        applyBuildings(map, true)
         map.jumpTo({ pitch: pitchRef.current || 45, bearing: bearingRef.current })
       }
     })
@@ -416,13 +418,20 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
       map.setLayoutProperty('fv-track-3d-fill', 'visibility', threeD ? 'visible' : 'none')
     }
     applyTerrain(map, threeD)
-    applyBuildings(map, threeD)
     // Camera is driven one-way (state → map) by the pitch/bearing effects below;
     // just set the target state here. Enabling pitches to 45°, disabling resets.
     setPitch(threeD ? 45 : 0)
     if (!threeD) setBearing(0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threeD])
+
+  // ---- buildings toggle (independent of 3D terrain) -----------------------
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    buildingsRef.current = buildings
+    applyBuildings(map, buildings)
+  }, [buildings])
 
   // ---- pitch / bearing sliders (single source of truth: React → map) ------
   useEffect(() => {
@@ -505,6 +514,17 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
               aria-pressed={threeD} title="3D terrain relief (tilt + pitch)"
               onClick={() => setThreeD((v) => !v)}>3D terrain</button>
           </div>
+          <div className="map-flyout__row">
+            <button className={'map-flyout__toggle' + (buildings ? ' is-active' : '')} type="button"
+              aria-pressed={buildings} title="Extruded 3D buildings (from zoom 14)"
+              onClick={() => setBuildings((v) => !v)}>
+              <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 21h18" /><path d="M5 21V7l7-4v18" /><path d="M19 21V11l-7-4" />
+                <path d="M9 9h.01M9 13h.01M9 17h.01" />
+              </svg>
+              Buildings
+            </button>
+          </div>
           {threeD && (
             <div className="view-sliders" role="group" aria-label="3D view controls">
               <div className="view-slider">
@@ -521,7 +541,7 @@ export default function MapPanel({ flight, hoverT, setHoverT }) {
               </div>
             </div>
           )}
-          <p className="map-flyout__hint">3D adds terrain relief and extruded buildings (from zoom 14), and lifts the track to its flight altitude above the terrain (AGL).</p>
+          <p className="map-flyout__hint">3D adds terrain relief and lifts the track to its flight altitude above the terrain (AGL). Buildings adds extruded 3D buildings (from zoom 14); both can be toggled independently.</p>
         </div>
       )}
     </>
